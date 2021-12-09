@@ -7,10 +7,13 @@ import tweepy
 import requests
 import time
 
-TWITTER_CLIENT_RAW = tweepy.Client(bearer_token=os.environ['BEARER_TOKEN'], consumer_key=os.environ['API_KEY'], consumer_secret=os.environ['API_KEY_SECRET'], return_type=requests.Response)
+if 'BEARER_TOKEN' in os.environ:
+    TWITTER_CLIENT_RAW = tweepy.Client(bearer_token=os.environ['BEARER_TOKEN'], consumer_key=os.environ['API_KEY'], consumer_secret=os.environ['API_KEY_SECRET'], return_type=requests.Response)
 
-TWEET_FIELDS = ["author_id", "created_at", "entities", "in_reply_to_user_id", "public_metrics", "referenced_tweets"]
-USER_FIELDS = ["username", "id"]
+    TWEET_FIELDS = ["author_id", "created_at", "entities", "in_reply_to_user_id", "public_metrics", "referenced_tweets"]
+    USER_FIELDS = ["username", "id"]
+else:
+    TWITTER_CLIENT_RAW = None
 
 from google.cloud import firestore
 
@@ -98,3 +101,67 @@ def compute_influencer_watermarks(event, context):
         data_ref = FIRESTORE_DB.collection(u"influencer_watermarks").document(str(row.user_id))
         data_ref.set(row.to_dict())
     logging.info("Successfully uploaded watermarks to Firestore. Exiting now....")
+
+def get_existing_user_ids():
+    """
+    Returns a set of user ids that already exist in our BigTable db
+    """
+    query = """
+    SELECT DISTINCT id FROM TwitterData.users
+    """
+    df = BIGQUERY_CLIENT.query(query).to_dataframe()
+    return set(df.id.values)
+
+def get_user_ids_to_download(existing_user_ids):
+    """
+    Returns a set of user ids that need to be looked up via Twitter API.
+
+    existing_user_ids is a set of user ids that already exist in our database
+    """
+    tweets = FIRESTORE_DB.collection(u"tweets").stream()
+    all_user_ids = set([tweet.to_dict()["author_id"] for tweet in tweets])
+    return all_user_ids - existing_user_ids
+
+def get_users_by_ids(user_ids):
+    """
+    Queries Twitter API for user info for a list of user ids.
+
+    Returns a list of dictionaries with user info.
+    """
+    BATCH_SIZE = 100
+    users = []
+    for n in range(int((len(user_ids) - 1)/BATCH_SIZE) + 1):
+        batch = user_ids[n*BATCH_SIZE:min(len(user_ids), (n+1)*BATCH_SIZE)]
+        response = TWITTER_CLIENT_RAW.get_users(ids=batch)
+        response_json = response.json()
+        if "data" in response_json:
+            users.extend(response_json["data"])
+        else:
+            logging.warn("No data returned for request %s", response.request.url)
+        time.sleep(3) # to adhere to 300 req/15 minutes rate limit
+        if (n+1) % 10 == 0:
+            logging.info("Fetched %d users", (n+1)*BATCH_SIZE)
+    time.sleep(3)
+    return users
+
+def download_new_users(event, context):
+    """
+    Look at the fresh tweets and download user information about tweet authors that are not yet in our database.
+
+    The records are saved into "users" collection in Firestore.
+
+    Background Cloud Function to be triggered by Pub/Sub
+    """
+    if TWITTER_CLIENT_RAW is None:
+        logging.error("Twitter client hasn't been initialized. Make sure environment variables are set. Exiting ...")
+    logging.info("Downloading new users. Looking up existing user ids")
+    existing_ids = get_existing_user_ids()
+    logging.info("Computing the list of new users")
+    user_ids_to_download = get_user_ids_to_download(existing_ids)
+    logging.info("About to query Twitter for %d user records", len(user_ids_to_download))
+    users = get_users_by_ids(list(user_ids_to_download))
+    logging.info("Got %d records from Twitter. Uploading to Firestore ...", len(users))
+    for user in users:
+        data_ref = FIRESTORE_DB.collection(u"users").document(str(user["id"]))
+        data_ref.set(user)
+    logging.info("Done uploading users to Firestore")
