@@ -68,5 +68,269 @@ main:
           auth:
             type: OIDC
           timeout: 540
+        next: createUsersNewTable
+    - createUsersNewTable:
+        call: googleapis.bigquery.v2.jobs.query
+        args:
+          projectId: web3twitterdata
+          body:
+            maxResults: 10
+            useLegacySql: false
+            timeoutMs: 540000
+            query: |
+              DROP TABLE IF EXISTS TwitterData.users_new;
+              CREATE TABLE TwitterData.users_new LIKE TwitterData.users;
+
+              INSERT TwitterData.users_new
+              WITH new_users_with_influencers AS (
+                  SELECT
+                      u.id,
+                      u.username,
+                      u.name,
+                      i.username IS NOT NULL AS is_influencer
+                  FROM TwitterDataRaw.users AS u
+                  LEFT JOIN TwitterData.influencer_usernames_import AS i
+                  ON u.username = i.username
+                  WHERE u.ds = (SELECT MAX(ds) FROM TwitterDataRaw.users)
+              )
+              SELECT
+                  COALESCE(e.id, n.id) AS id,
+                  COALESCE(e.username, n.username) AS username,
+                  COALESCE(e.name, n.name) AS name,
+                  COALESCE(e.is_influencer, n.is_influencer) AS is_influencer
+              FROM TwitterData.users AS e
+              FULL OUTER JOIN new_users_with_influencers AS n
+              ON e.id = n.id;
+        next: exchangeUsersTable
+    - exchangeUsersTable:
+        call: conditionalExchange
+        args:
+          table_name: users
+        next: createReferencedTweetsNewTable
+    - createReferencedTweetsNewTable:
+        call: googleapis.bigquery.v2.jobs.query
+        args:
+          projectId: web3twitterdata
+          body:
+            maxResults: 10
+            useLegacySql: false
+            timeoutMs: 540000
+            query: |
+              DROP TABLE IF EXISTS TwitterData.referenced_tweets_new;
+              CREATE TABLE TwitterData.referenced_tweets_new LIKE TwitterData.referenced_tweets;
+
+              INSERT INTO TwitterData.referenced_tweets_new
+              SELECT
+                  COALESCE(e.tweet_id, n.tweet_id) AS tweet_id,
+                  COALESCE(e.referenced_tweet_id, n.referenced_tweet_id) AS referenced_tweet_id,
+                  COALESCE(e.type, n.type) AS type
+              FROM TwitterData.referenced_tweets AS e
+              FULL OUTER JOIN TwitterDataRaw.referenced_tweets AS n
+              ON e.tweet_id = n.tweet_id AND e.referenced_tweet_id = n.referenced_tweet_id AND e.type = n.type
+              WHERE n.ds IS NULL OR n.ds = (SELECT MAX(ds) FROM TwitterDataRaw.referenced_tweets)
+        next: exchangeReferencedTweetsTable
+    - exchangeReferencedTweetsTable:
+        call: conditionalExchange
+        args:
+          table_name: referenced_tweets
+        next: createLikesNewTable
+    - createLikesNewTable:
+        call: googleapis.bigquery.v2.jobs.query
+        args:
+          projectId: web3twitterdata
+          body:
+            maxResults: 10
+            useLegacySql: false
+            timeoutMs: 540000
+            query: |
+              DROP TABLE IF EXISTS TwitterData.likes_new;
+              CREATE TABLE TwitterData.likes_new LIKE TwitterData.likes;
+
+              INSERT INTO TwitterData.likes_new
+              WITH new_likes_hydrated AS (
+                  SELECT
+                      l.id AS tweet_id,
+                      liked_by_user_id,
+                      u.username AS liked_by_username,
+                      created_at AS tweet_created_at,
+                      u.is_influencer AS is_influencer_like
+                  FROM TwitterDataRaw.likes AS l
+                  LEFT JOIN TwitterData.users AS u
+                  ON l.liked_by_user_id = u.id
+                  WHERE l.ds = (SELECT MAX(ds) FROM TwitterDataRaw.likes) -- use the latest partition
+              )
+              SELECT
+                  COALESCE(e.tweet_id, n.tweet_id) AS tweet_id,
+                  COALESCE(e.liked_by_user_id, n.liked_by_user_id) AS liked_by_user_id,
+                  COALESCE(e.liked_by_username, n.liked_by_username)  AS liked_by_username,
+                  COALESCE(e.tweet_created_at, n.tweet_created_at) AS tweet_created_at,
+                  COALESCE(e.is_influencer_like, n.is_influencer_like) AS is_influencer_like
+              FROM TwitterData.likes AS e
+              FULL OUTER JOIN new_likes_hydrated AS n
+              ON e.tweet_id = n.tweet_id  AND e.liked_by_user_id = n.liked_by_user_id;
+        next: exchangeLikesTable
+    - exchangeLikesTable:
+        call: conditionalExchange
+        args:
+          table_name: likes
+        next: createTweetsNewTable
+    - createTweetsNewTable:
+        call: googleapis.bigquery.v2.jobs.query
+        args:
+          projectId: web3twitterdata
+          body:
+            maxResults: 10
+            useLegacySql: false
+            timeoutMs: 540000
+            query: |
+              DROP TABLE IF EXISTS TwitterData.tweets_new;
+              CREATE TABLE TwitterData.tweets_new LIKE TwitterData.tweets;
+
+              INSERT INTO TwitterData.tweets_new
+              WITH
+              new_tweets AS (
+                  SELECT
+                      * EXCEPT(ds)
+                  FROM TwitterDataRaw.tweets
+                  WHERE ds = (SELECT MAX(ds) FROM TwitterDataRaw.tweets)
+              ),
+              hydrated_references AS (
+                  SELECT
+                      tweet_id,
+                      referenced_tweet_id,
+                      username,
+                      type
+                  FROM TwitterDataRaw.referenced_tweets AS rt
+                  LEFT JOIN new_tweets AS t
+                  ON rt.referenced_tweet_id = t.id
+                  LEFT JOIN TwitterData.users AS u
+                  ON t.author_id = u.id
+                  WHERE rt.ds = (SELECT MAX(ds) FROM TwitterDataRaw.referenced_tweets)
+              ),
+              quotes AS (
+                  SELECT
+                      *
+                  FROM hydrated_references WHERE type = 'quoted'
+              ),
+              replies AS (
+                  SELECT
+                      *
+                  FROM hydrated_references WHERE type = 'replied_to'
+              ),
+              retweets AS (
+                  SELECT
+                      *
+                  FROM hydrated_references WHERE type = 'retweeted'
+              ),
+              hydrated_new_tweets AS (
+                  SELECT
+                      t.id,
+                      t.text,
+                      t.created_at,
+                      t.fetched_at,
+                      t.author_id,
+                      u.username AS author_username,
+                      in_reply_to_user_id,
+                      u1.username AS in_reply_to_username,
+                      t.mentioned_hashtags,
+                      t.mentioned_users AS mentioned_usernames,
+                      t.mentioned_urls,
+                      t.like_count,
+                      t.retweet_count,
+                      t.quote_count,
+                      t.reply_count,
+                      u.is_influencer AS is_by_influencer,
+                      replies.referenced_tweet_id IS NOT NULL AS is_reply,
+                      quotes.referenced_tweet_id IS NOT NULL AS is_quote,
+                      retweets.referenced_tweet_id IS NOT NULL AS is_retweet,
+                      (replies.username IS NOT NULL AND replies.username = u.username) AS is_selfreply,
+                      (quotes.username IS NOT NULL AND quotes.username = u.username) AS is_selfquote,
+                      replies.referenced_tweet_id AS replied_to_tweet_id,
+                      quotes.referenced_tweet_id AS quoted_tweet_id,
+                      retweets.referenced_tweet_id AS retweeted_tweet_id,
+                      replies.username AS replied_to_username,
+                      quotes.username AS quoted_username,
+                      retweets.username AS retweeted_username
+                  FROM new_tweets  AS t
+                  LEFT JOIN TwitterData.users AS u
+                  ON t.author_id = u.id
+                  LEFT JOIN TwitterData.users AS u1
+                  ON t.in_reply_to_user_id = u1.id
+                  LEFT JOIN replies
+                  ON t.id = replies.tweet_id
+                  LEFT JOIN quotes
+                  ON t.id = quotes.tweet_id
+                  LEFT JOIN retweets
+                  ON t.id = retweets.tweet_id
+              )
+              SELECT
+                  COALESCE(e.id, n.id) AS id,
+                  COALESCE(e.text, n.text) AS text,
+                  COALESCE(e.created_at, n.created_at) AS created_at,
+                  COALESCE(e.fetched_at, n.fetched_at) AS fetched_at,
+                  COALESCE(e.author_id, n.author_id) AS author_id,
+                  COALESCE(e.author_username, n.author_username) AS author_username,
+                  COALESCE(e.in_reply_to_user_id, n.in_reply_to_user_id) AS in_reply_to_user_id,
+                  COALESCE(e.in_reply_to_username, n.in_reply_to_username) AS in_reply_to_username,
+                  COALESCE(e.mentioned_hashtags, n.mentioned_hashtags) AS mentioned_hashtags,
+                  COALESCE(e.mentioned_usernames, n.mentioned_usernames) AS mentioned_usernames,
+                  COALESCE(e.mentioned_urls, n.mentioned_urls) AS mentioned_urls,
+                  COALESCE(e.like_count, n.like_count) AS like_count,
+                  COALESCE(e.retweet_count, n.retweet_count) AS retweet_count,
+                  COALESCE(e.quote_count, n.quote_count) AS quote_count,
+                  COALESCE(e.reply_count, n.reply_count) AS reply_count,
+                  COALESCE(e.is_by_influencer, n.is_by_influencer) AS is_by_influencer,
+                  COALESCE(e.is_reply, n.is_reply) AS is_reply,
+                  COALESCE(e.is_quote, n.is_quote) AS is_quote,
+                  COALESCE(e.is_retweet, n.is_retweet) AS is_retweet,
+                  COALESCE(e.is_selfreply, n.is_selfreply) AS is_selfreply,
+                  COALESCE(e.is_selfquote, n.is_selfquote) AS is_selfquote,
+                  COALESCE(e.replied_to_tweet_id, n.replied_to_tweet_id) AS replied_to_tweet_id,
+                  COALESCE(e.quoted_tweet_id, n.quoted_tweet_id) AS quoted_tweet_id,
+                  COALESCE(e.retweeted_tweet_id, n.retweeted_tweet_id) AS retweeted_tweet_id,
+                  COALESCE(e.replied_to_username, n.replied_to_username) AS replied_to_username,
+                  COALESCE(e.quoted_username, n.quoted_username) AS quoted_username,
+                  COALESCE(e.retweeted_username, n.retweeted_username) AS retweeted_username
+              FROM TwitterData.tweets AS e
+              FULL OUTER JOIN hydrated_new_tweets AS n
+              ON e.id = n.id
+              WHERE COALESCE(e.author_username, n.author_username) IS NOT NULL -- working around some edge case
+        next: exchangeTweetsTable
+    - exchangeTweetsTable:
+        call: conditionalExchange
+        args:
+          table_name: tweets
+        next: end
 
 
+
+conditionalExchange:
+  params: ["table_name"]
+  steps:
+    - checkIfNewTableHasMoreRows:
+        call: googleapis.bigquery.v2.jobs.query
+        args:
+          projectId: web3twitterdata
+          body:
+            maxResults: 10
+            useLegacySql: false
+            timeoutMs: 60000
+            query: ${"SELECT (SELECT COUNT(1) FROM TwitterData." + table_name + ") < (SELECT COUNT(1) FROM TwitterData." + table_name + "_new)"}
+        result: queryResult
+    - checkResult:
+        switch:
+          - condition: ${queryResult.rows[0].f[0].v == "true"}
+            next: exchangeTable
+        next: failedExchange
+    - exchangeTable:
+        call: googleapis.bigquery.v2.jobs.query
+        args:
+          projectId: web3twitterdata
+          body:
+            maxResults: 10
+            useLegacySql: false
+            timeoutMs: 60000
+            query: ${"DROP TABLE IF EXISTS TwitterData." + table_name + "_old; ALTER TABLE TwitterData." + table_name + " RENAME TO " + table_name + "_old; ALTER TABLE TwitterData." + table_name +"_new RENAME TO " + table_name}
+    - failedExchange:
+        return: ${"Failed to replace table TwitterData." + table_name}
+        next: end
