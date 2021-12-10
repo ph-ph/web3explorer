@@ -5,6 +5,9 @@ main:
           - compute_influencer_watermarks_url: https://us-west1-web3twitterdata.cloudfunctions.net/compute_influencer_watermarks
           - download_new_tweets_and_likes_for_user_url: https://us-west1-web3twitterdata.cloudfunctions.net/download_new_tweets_and_likes_for_user
           - download_new_users_url: https://us-west1-web3twitterdata.cloudfunctions.net/download_new_users
+          - upload_tweets_from_firestore_to_big_query_url: https://us-west1-web3twitterdata.cloudfunctions.net/upload_tweets_from_firestore_to_big_query
+          - upload_likes_from_firestore_to_big_query_url: https://us-west1-web3twitterdata.cloudfunctions.net/upload_likes_from_firestore_to_big_query
+          - upload_users_from_firestore_to_big_query_url: https://us-west1-web3twitterdata.cloudfunctions.net/upload_users_from_firestore_to_big_query
         next: computeInfluencerWatermarks
     - computeInfluencerWatermarks:
         call: http.get
@@ -41,4 +44,29 @@ main:
           auth:
             type: OIDC
           timeout: 540
+        next: uploadTweetsToBigQuery
+    - uploadTweetsToBigQuery:
+        call: http.post
+        args:
+          url: ${upload_tweets_from_firestore_to_big_query_url}
+          auth:
+            type: OIDC
+          timeout: 540
+        next: uploadLikesToBigQuery
+    - uploadLikesToBigQuery:
+        call: http.post
+        args:
+          url: ${upload_likes_from_firestore_to_big_query_url}
+          auth:
+            type: OIDC
+          timeout: 540
+        next: uploadUsersToBigQuery
+    - uploadUsersToBigQuery:
+        call: http.post
+        args:
+          url: ${upload_users_from_firestore_to_big_query_url}
+          auth:
+            type: OIDC
+          timeout: 540
+
 

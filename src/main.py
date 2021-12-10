@@ -448,12 +448,19 @@ def upload_df_to_big_query_with_ds_partition(df, table_id):
 
     return job.result()
 
-def upload_tweets_from_firestore_to_big_query(event, context):
+def upload_tweets_from_firestore_to_big_query(request):
     """
     Get all the tweets stored in Firestore, upload them to Big Query raw data tables.
 
-    Background Cloud Function to be triggered by Pub/Sub
+    HTTP Cloud Function. Accepts only POST requests, no body is needed.
+    Responds with json body:
+    {
+        "status": "SUCCESS"
+    }
     """
+    if request.method != "POST":
+        logging.error("Incorrect method: %s", request.method)
+        return (json.dumps({"status": "INVALID_REQUEST"}), 400, RESPONSE_HEADERS)
     logging.info("Getting tweets data from Firestore...")
     (tweets_df, referenced_tweets_df) = create_new_tweets_and_references_dataframes()
     logging.info("Got %d tweets and %d referenced tweets", len(tweets_df), len(referenced_tweets_df))
@@ -462,12 +469,18 @@ def upload_tweets_from_firestore_to_big_query(event, context):
     logging.info("Uploaded %d rows to Big Query. Now on to uploading referenced tweets", result.output_rows)
     result = upload_df_to_big_query_with_ds_partition(referenced_tweets_df, "TwitterDataRaw.referenced_tweets")
     logging.info("Uploaded %d rows to Big Query. We're done!", result.output_rows)
+    return (json.dumps({"status": "SUCCESS"}), 200, RESPONSE_HEADERS)
 
-def upload_likes_from_firestore_to_big_query(event, context):
+
+def upload_likes_from_firestore_to_big_query(request):
     """
     Get all the likes stored in Firestore, upload them to Big Query raw data tables.
 
-    Background Cloud Function to be triggered by Pub/Sub
+    HTTP Cloud Function. Accepts only POST requests, no body is needed.
+    Responds with json body:
+    {
+        "status": "SUCCESS"
+    }
     """
     logging.info("Getting likes data from Firestore...")
     likes_df = create_new_likes_dataframe()
@@ -475,12 +488,18 @@ def upload_likes_from_firestore_to_big_query(event, context):
     logging.info("Uploading likes to Big Query...")
     result = upload_df_to_big_query_with_ds_partition(likes_df, "TwitterDataRaw.likes")
     logging.info("Uploaded %d rows to Big Query. We're done!", result.output_rows)
+    return (json.dumps({"status": "SUCCESS"}), 200, RESPONSE_HEADERS)
 
-def upload_users_from_firestore_to_big_query(event, context):
+
+def upload_users_from_firestore_to_big_query(request):
     """
     Get all the users stored in Firestore, upload them to Big Query raw data tables.
 
-    Background Cloud Function to be triggered by Pub/Sub
+    HTTP Cloud Function. Accepts only POST requests, no body is needed.
+    Responds with json body:
+    {
+        "status": "SUCCESS"
+    }
     """
     logging.info("Getting users data from Firestore...")
     likes_df = create_new_users_dataframe()
@@ -488,3 +507,4 @@ def upload_users_from_firestore_to_big_query(event, context):
     logging.info("Uploading users to Big Query...")
     result = upload_df_to_big_query_with_ds_partition(likes_df, "TwitterDataRaw.users")
     logging.info("Uploaded %d rows to Big Query. We're done!", result.output_rows)
+    return (json.dumps({"status": "SUCCESS"}), 200, RESPONSE_HEADERS)
