@@ -9,6 +9,7 @@ import datetime
 import time
 import pandas as pd
 import numpy as np
+import json
 
 if 'BEARER_TOKEN' in os.environ:
     TWITTER_CLIENT_RAW = tweepy.Client(bearer_token=os.environ['BEARER_TOKEN'], consumer_key=os.environ['API_KEY'], consumer_secret=os.environ['API_KEY_SECRET'], return_type=requests.Response)
@@ -45,6 +46,9 @@ LOGGING_CLIENT.setup_logging()
 
 # Now we can use standard Python logging
 import logging
+
+# Standard response headers for HTTP Cloud functions
+RESPONSE_HEADERS = {"Content-Type": "application/json"}
 
 ##############################################################################################
 # End of setup code
@@ -90,20 +94,34 @@ def get_influencer_watermarks():
     """
     return BIGQUERY_CLIENT.query(query).to_dataframe()
 
-def compute_influencer_watermarks(event, context):
+def compute_influencer_watermarks(request):
     """
     Compute influencer watermarks and upload them to Firestore "influencer_watermarks" collection
 
-    Background Cloud Function to be triggered by Pub/Sub.
+    HTTP Cloud Function. Responds both to GET and POST with json:
+    {
+        "watermarks": [
+            {
+                "user_id": 123,
+                "username": "test",
+                "latest_tweet_id": 456,
+                "latest_like_at": "2021-12-09T12:34:00.000Z"
+            },
+            ....
+        ]
+    }
     """
     logging.info("compute_influencer_watermarks called.")
 
     df = get_influencer_watermarks()
     logging.info("Successfully obtained influencer watermarks. Saving to Firestore...")
+    watermarks = []
     for _, row in df.iterrows():
         data_ref = FIRESTORE_DB.collection(u"influencer_watermarks").document(str(row.user_id))
         data_ref.set(row.to_dict())
+        watermarks.append(row.to_dict())
     logging.info("Successfully uploaded watermarks to Firestore. Exiting now....")
+    return (json.dumps({"watermarks": watermarks}), 200, RESPONSE_HEADERS)
 
 def get_existing_user_ids():
     """

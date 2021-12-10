@@ -5,4 +5,4 @@ gcloud functions deploy compute_influencer_watermarks \
         --service-account=service-account@web3twitterdata.iam.gserviceaccount.com \
         --source=./src \
         --timeout=60s \
-        --trigger-topic=compute_influencer_watermarks
+        --trigger-http
