@@ -324,16 +324,23 @@ def get_users_by_ids(user_ids):
     time.sleep(3)
     return users
 
-def download_new_users(event, context):
+def download_new_users(request):
     """
     Look at the fresh tweets and download user information about tweet authors that are not yet in our database.
 
     The records are saved into "users" collection in Firestore.
 
-    Background Cloud Function to be triggered by Pub/Sub
+    HTTP Cloud function that accepts POST requests (no body needed).
+    Responds with json body:
+    {
+        "status": "SUCCESS"
+    }
     """
     if TWITTER_CLIENT_RAW is None:
         logging.error("Twitter client hasn't been initialized. Make sure environment variables are set. Exiting ...")
+    if request.method != "POST":
+        logging.error("Incorrect method: %s", request.method)
+        return (json.dumps({"status": "INVALID_REQUEST"}), 400, RESPONSE_HEADERS)
     logging.info("Downloading new users. Looking up existing user ids")
     existing_ids = get_existing_user_ids()
     logging.info("Computing the list of new users")
@@ -345,6 +352,7 @@ def download_new_users(event, context):
         data_ref = FIRESTORE_DB.collection(u"users").document(str(user["id"]))
         data_ref.set(user)
     logging.info("Done uploading users to Firestore")
+    return (json.dumps({"status": "SUCCESS"}), 200, RESPONSE_HEADERS)
 
 def convert_to_tweets_table_row(tweet):
     """

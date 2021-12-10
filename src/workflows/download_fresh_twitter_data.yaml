@@ -4,6 +4,7 @@ main:
         assign:
           - compute_influencer_watermarks_url: https://us-west1-web3twitterdata.cloudfunctions.net/compute_influencer_watermarks
           - download_new_tweets_and_likes_for_user_url: https://us-west1-web3twitterdata.cloudfunctions.net/download_new_tweets_and_likes_for_user
+          - download_new_users_url: https://us-west1-web3twitterdata.cloudfunctions.net/download_new_users
         next: computeInfluencerWatermarks
     - computeInfluencerWatermarks:
         call: http.get
@@ -32,3 +33,12 @@ main:
                   auth:
                     type: OIDC
                   timeout: 540
+        next: downloadNewUsers
+    - downloadNewUsers:
+        call: http.post
+        args:
+          url: ${download_new_users_url}
+          auth:
+            type: OIDC
+          timeout: 540
+

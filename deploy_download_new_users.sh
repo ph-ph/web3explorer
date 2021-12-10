@@ -5,4 +5,4 @@ gcloud functions deploy download_new_users \
         --service-account=service-account@web3twitterdata.iam.gserviceaccount.com \
         --source=./src \
         --timeout=540s \
-        --trigger-topic=download_new_users
+        --trigger-http
