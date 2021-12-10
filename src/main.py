@@ -5,7 +5,10 @@
 import os
 import tweepy
 import requests
+import datetime
 import time
+import pandas as pd
+import numpy as np
 
 if 'BEARER_TOKEN' in os.environ:
     TWITTER_CLIENT_RAW = tweepy.Client(bearer_token=os.environ['BEARER_TOKEN'], consumer_key=os.environ['API_KEY'], consumer_secret=os.environ['API_KEY_SECRET'], return_type=requests.Response)
@@ -165,3 +168,138 @@ def download_new_users(event, context):
         data_ref = FIRESTORE_DB.collection(u"users").document(str(user["id"]))
         data_ref.set(user)
     logging.info("Done uploading users to Firestore")
+
+def convert_to_tweets_table_row(tweet):
+    """
+    Generate a flattened dict from Twitter API data representing one tweet.
+
+    This should match the schema of raw data tables in BigQuery
+    """
+    result = { key: tweet.get(key) for key in [
+        "id", "text", "author_id", "created_at", "fetched_at", "in_reply_to_user_id"
+    ]}
+    result.update(tweet["public_metrics"])
+    if "entities" in tweet:
+        if "urls" in tweet["entities"]:
+            result["mentioned_urls"] = [url["expanded_url"] for url in tweet["entities"]["urls"]]
+        if "hashtags" in tweet["entities"]:
+            result["mentioned_hashtags"] = [hashtag["tag"] for hashtag in tweet["entities"]["hashtags"]]
+        if "mentions" in tweet["entities"]:
+            result["mentioned_users"] = [mention["username"] for mention in tweet["entities"]["mentions"]]
+    return result
+
+def convert_nullable_to_int(n):
+    if n is None:
+        return None
+    else:
+        return int(n)
+
+def create_new_tweets_and_references_dataframes():
+    """
+    Read new tweets and referenced tweets from Firestore and convert them to a dataframe that is ready to be uploaded to BigQuery.
+
+    Returns a tuple with two dataframes - one for tweets and the other one for referenced tweets.
+    """
+    tweets = FIRESTORE_DB.collection(u"tweets").stream()
+    tweets_list = []
+    referenced_tweets = []
+    for tweet in tweets:
+        td = tweet.to_dict()
+        tweets_list.append(convert_to_tweets_table_row(td))
+        if "referenced_tweets" in td:
+            for t in td["referenced_tweets"]:
+                referenced_tweets.append({
+                    "tweet_id": int(td["id"]),
+                    "referenced_tweet_id": int(t["id"]),
+                    "type": t["type"],
+                })
+    tweets_df = pd.DataFrame(tweets_list)
+    # do necessary type conversions
+    for field in ["id", "author_id"]:
+        tweets_df[field] = pd.to_numeric(tweets_df[field])
+    for field in ["created_at", "fetched_at"]:
+        tweets_df[field] = pd.to_datetime(tweets_df[field])
+    tweets_df["in_reply_to_user_id"] = tweets_df["in_reply_to_user_id"].apply(convert_nullable_to_int)
+
+    ref_tweets_df = pd.DataFrame(referenced_tweets)
+
+    return (tweets_df, ref_tweets_df)
+
+def create_new_likes_dataframe():
+    """
+    Create a dataframe with all the likes stored in Firestore
+
+    Returns dataframe.
+    """
+    likes = FIRESTORE_DB.collection(u"likes").stream()
+    likes_df = pd.DataFrame([like.to_dict() for like in likes])
+    likes_df.drop(columns=["text"], inplace=True)
+    likes_df["id"] = likes_df["id"].astype(np.int64)
+    likes_df["created_at"] = pd.to_datetime(likes_df["created_at"])
+    return likes_df
+
+def create_new_users_dataframe():
+    """
+    Create a dataframe with all the users stored in Firestore
+
+    Returns dataframe.
+    """
+    users = FIRESTORE_DB.collection(u"users").stream()
+    users_df = pd.DataFrame([user.to_dict() for user in users])
+    users_df["id"] = pd.to_numeric(users_df["id"])
+    return users_df
+
+def upload_df_to_big_query_with_ds_partition(df, table_id):
+    """
+    Uploads dataframe to BigQuery table partitioned by ds field
+    """
+    table = BIGQUERY_CLIENT.get_table(table_id)
+    # let's add ds field to our dataframe
+    date_str = str(datetime.date.today())
+    df_copy = df.copy()
+    df_copy["ds"] = pd.to_datetime(date_str)
+    BIGQUERY_CLIENT.query(f"DELETE {table_id} WHERE ds='{date_str}'")
+    job = BIGQUERY_CLIENT.load_table_from_dataframe(df_copy, table)
+
+    return job.result()
+
+def upload_tweets_from_firestore_to_big_query(event, context):
+    """
+    Get all the tweets stored in Firestore, upload them to Big Query raw data tables.
+
+    Background Cloud Function to be triggered by Pub/Sub
+    """
+    logging.info("Getting tweets data from Firestore...")
+    (tweets_df, referenced_tweets_df) = create_new_tweets_and_references_dataframes()
+    logging.info("Got %d tweets and %d referenced tweets", len(tweets_df), len(referenced_tweets_df))
+    logging.info("Uploading tweets to Big Query...")
+    result = upload_df_to_big_query_with_ds_partition(tweets_df, "TwitterDataRaw.tweets")
+    logging.info("Uploaded %d rows to Big Query. Now on to uploading referenced tweets", result.output_rows)
+    result = upload_df_to_big_query_with_ds_partition(referenced_tweets_df, "TwitterDataRaw.referenced_tweets")
+    logging.info("Uploaded %d rows to Big Query. We're done!", result.output_rows)
+
+def upload_likes_from_firestore_to_big_query(event, context):
+    """
+    Get all the likes stored in Firestore, upload them to Big Query raw data tables.
+
+    Background Cloud Function to be triggered by Pub/Sub
+    """
+    logging.info("Getting likes data from Firestore...")
+    likes_df = create_new_likes_dataframe()
+    logging.info("Got %d likes", len(likes_df))
+    logging.info("Uploading likes to Big Query...")
+    result = upload_df_to_big_query_with_ds_partition(likes_df, "TwitterDataRaw.likes")
+    logging.info("Uploaded %d rows to Big Query. We're done!", result.output_rows)
+
+def upload_users_from_firestore_to_big_query(event, context):
+    """
+    Get all the users stored in Firestore, upload them to Big Query raw data tables.
+
+    Background Cloud Function to be triggered by Pub/Sub
+    """
+    logging.info("Getting users data from Firestore...")
+    likes_df = create_new_users_dataframe()
+    logging.info("Got %d users", len(likes_df))
+    logging.info("Uploading users to Big Query...")
+    result = upload_df_to_big_query_with_ds_partition(likes_df, "TwitterDataRaw.users")
+    logging.info("Uploaded %d rows to Big Query. We're done!", result.output_rows)

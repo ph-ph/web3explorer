@@ -1,0 +1,85 @@
+[
+  {
+    "description": "Tweet id",
+    "mode": "REQUIRED",
+    "name": "id",
+    "type": "INTEGER"
+  },
+  {
+    "description": "Tweet text",
+    "mode": "NULLABLE",
+    "name": "text",
+    "type": "STRING"
+  },
+  {
+    "description": "User id of tweet's author",
+    "mode": "REQUIRED",
+    "name": "author_id",
+    "type": "INTEGER"
+  },
+  {
+    "description": "When the tweet was created",
+    "mode": "REQUIRED",
+    "name": "created_at",
+    "type": "TIMESTAMP"
+  },
+  {
+    "description": "When the tweet data was fetched from Twitter",
+    "mode": "NULLABLE",
+    "name": "fetched_at",
+    "type": "TIMESTAMP"
+  },
+  {
+    "description": "If the tweet is a reply, id of the user that it replies to",
+    "mode": "NULLABLE",
+    "name": "in_reply_to_user_id",
+    "type": "INTEGER"
+  },
+  {
+    "description": "Number of times the tweet was retweeted, at the time of fetching the data",
+    "mode": "NULLABLE",
+    "name": "retweet_count",
+    "type": "INTEGER"
+  },
+  {
+    "description": "Number of times the tweet was replied to, at the time of fetching the data",
+    "mode": "NULLABLE",
+    "name": "reply_count",
+    "type": "INTEGER"
+  },
+  {
+    "description": "Number of times the tweet was liked, at the time of fetching the data",
+    "mode": "NULLABLE",
+    "name": "like_count",
+    "type": "INTEGER"
+  },
+  {
+    "description": "Number of times the tweet was quoted, at the time of fetching the data",
+    "mode": "NULLABLE",
+    "name": "quote_count",
+    "type": "INTEGER"
+  },
+  {
+    "description": "An array of user handles mentioned in the tweet",
+    "mode": "REPEATED",
+    "name": "mentioned_users",
+    "type": "STRING"
+  },
+  {
+    "description": "An array of URLs mentioned in the tweet",
+    "mode": "REPEATED",
+    "name": "mentioned_urls",
+    "type": "STRING"
+  },
+  {
+    "description": "An array of hashtags mentioned in the tweet",
+    "mode": "REPEATED",
+    "name": "mentioned_hashtags",
+    "type": "STRING"
+  },
+  {
+    "mode": "NULLABLE",
+    "name": "ds",
+    "type": "DATE"
+  }
+]

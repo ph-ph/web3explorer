@@ -1,0 +1,25 @@
+[
+  {
+    "description": "User id",
+    "mode": "REQUIRED",
+    "name": "id",
+    "type": "INTEGER"
+  },
+  {
+    "description": "Human readable user name",
+    "mode": "NULLABLE",
+    "name": "name",
+    "type": "STRING"
+  },
+  {
+    "description": "Twitter user handle",
+    "mode": "REQUIRED",
+    "name": "username",
+    "type": "STRING"
+  },
+  {
+    "mode": "NULLABLE",
+    "name": "ds",
+    "type": "DATE"
+  }
+]
