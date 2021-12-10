@@ -300,6 +300,187 @@ main:
         call: conditionalExchange
         args:
           table_name: tweets
+        next: createWordMentionsTable
+    - createWordMentionsTable:
+        call: googleapis.bigquery.v2.jobs.query
+        args:
+          projectId: web3twitterdata
+          body:
+            maxResults: 10
+            useLegacySql: false
+            timeoutMs: 540000
+            query: |
+              DROP TABLE IF EXISTS TwitterData.word_mentions;
+
+              CREATE TABLE TwitterData.word_mentions (
+                  word STRING NOT NULL OPTIONS(description="lowercase word mentioned in the tweet text"),
+                  id INT64 NOT NULL OPTIONS(description="Id of tweet"),
+                  text STRING NOT NULL OPTIONS(description="Text of tweet, including newlines and emojis"),
+                  created_at TIMESTAMP NOT NULL OPTIONS(description="Creation timestamp"),
+                  fetched_at TIMESTAMP NOT NULL OPTIONS(description="Timestamp of when the tweet data was fetched. Important for determining maturity of engagement metrics"),
+                  author_id INT64 NOT NULL OPTIONS(description="User id of tweet author"),
+                  author_username STRING NOT NULL OPTIONS(description="Username of tweet author"),
+                  in_reply_to_user_id INT64 OPTIONS(description="If this tweet is a reply, id of the author of the original tweet. NULL otherwise"),
+                  in_reply_to_username STRING OPTIONS(description="If this tweet is a reply, username of the author of the original tweet. NULL otherwise"),
+                  mentioned_hashtags ARRAY<STRING> OPTIONS(description="Array of hashtags that are mentioned in the tweet"),
+                  mentioned_usernames ARRAY<STRING> OPTIONS(description="Array of usernames that are mentioned in the tweet, without leading @"),
+                  mentioned_urls ARRAY<STRING> OPTIONS(description="Array of expanded urls that are mentioned in the tweet"),
+                  like_count INT64 NOT NULL OPTIONS(description="Number of likes for the tweet. Depends on when the tweet data was fetched"),
+                  retweet_count INT64 NOT NULL OPTIONS(description="Number of retweets for the tweet. Depends on when the tweet data was fetched"),
+                  quote_count INT64 NOT NULL OPTIONS(description="Number of times this tweet was quoted. Depends on when the tweet data was fetched"),
+                  reply_count INT64 NOT NULL OPTIONS(description="Number of replies to this tweet. Depends on when the tweet data was fetched"),
+                  is_by_influencer BOOLEAN NOT NULL OPTIONS(description="True if the tweet is by a user from our list of influencers"),
+                  is_reply BOOLEAN NOT NULL OPTIONS(description="True if the tweet is a reply to other tweet"),
+                  is_quote BOOLEAN NOT NULL OPTIONS(description="True if the tweet is quoting another tweet"),
+                  is_retweet BOOLEAN NOT NULL OPTIONS(description="True if the tweet is a retweet"),
+                  is_selfreply BOOLEAN NOT NULL OPTIONS(description="True if the tweet replies to a tweet by the same author"),
+                  is_selfquote BOOLEAN NOT NULL OPTIONS(description="True if the tweet quotes a tweet by the same author"),
+                  replied_to_tweet_id INT64 OPTIONS(description="Id of the tweet replied to by this tweet"),
+                  quoted_tweet_id INT64 OPTIONS(description="Id of the tweet quoted by this tweet"),
+                  retweeted_tweet_id INT64 OPTIONS(description="Id of the tweet retweeted by this tweet"),
+                  replied_to_username STRING OPTIONS(description="Username of author of the tweet that this tweet replies to"),
+                  quoted_username STRING OPTIONS(description="Username of author of the tweet that this tweet quotes"),
+                  retweeted_username STRING OPTIONS(description="Username of author of the tweet that this tweet retweets")
+              )
+              OPTIONS(
+                  description="A table with one row for each word occurrence in a tweet. The set of tweets is the same as in the tweets table. If a word occurs more than once in a tweet, only one row will be created for this word-tweet combination."
+              )
+              AS
+              WITH tweets_with_word_bags AS (
+                  SELECT
+                      -- Ok, this is crazy, so let me explain what's going on here
+                      -- We first lowercase tweet's text and replace newlines with spaces
+                      -- we then split it by spaces into words
+                      -- we then "unnest" the resulting array into table - this gives us a table with row per word
+                      -- we then remove leading and trailing punctuation from each word, so that "dao:" and "@dao." turn into "dao"
+                      -- we then select unique words and turn them back into an array, and we call this array "words"
+                      ARRAY(SELECT DISTINCT TRIM(TRIM(word), ",.!?:\"'") FROM UNNEST(SPLIT(TRANSLATE(LOWER(text), "\n", " "), " ")) AS word) AS words,
+                      tweets.*
+                  FROM `web3twitterdata.TwitterData.tweets` AS tweets
+              )
+              SELECT
+                  word,
+                  tweets_with_word_bags.* EXCEPT(words)
+              FROM tweets_with_word_bags
+              CROSS JOIN UNNEST(words) AS word
+              WHERE TRIM(TRIM(word), ",.!?:") != '';
+        next: createWordMentionStatsTable
+    - createWordMentionStatsTable:
+        call: googleapis.bigquery.v2.jobs.query
+        args:
+          projectId: web3twitterdata
+          body:
+            maxResults: 10
+            useLegacySql: false
+            timeoutMs: 540000
+            query: |
+              DROP TABLE IF EXISTS TwitterData.word_mention_stats;
+
+              CREATE TABLE `web3twitterdata.TwitterData.word_mention_stats`
+              (
+                  word STRING NOT NULL OPTIONS(description="word mentioned in a tweet"),
+                  week_start DATE NOT NULL OPTIONS(description="weekly snapshot date"),
+                  week_num INT64 NOT NULL OPTIONS(description="zero-based number of the snapshot"),
+                  mentions_before INT64 NOT NULL OPTIONS(description="number of times the word was mentioned before the snapshot date"),
+                  influencer_mentions_before INT64 NOT NULL OPTIONS(description="number of times the word was mentioned by influencers before the snapshot date"),
+                  quotes_before INT64 NOT NULL OPTIONS(description="total number of quotes for tweets mentioning the word before the snapshot date"),
+                  influencer_quotes_before INT64 NOT NULL OPTIONS(description="total number of quotes for influencer tweets mentioning the word before the snapshot date"),
+                  norm_mentions_before FLOAT64 NOT NULL OPTIONS(description="normalized number of times the word was mentioned before the snapshot date"),
+                  norm_influencer_mentions_before FLOAT64 NOT NULL OPTIONS(description="normalized number of times the word was mentioned by influencers before the snapshot date"),
+                  norm_quotes_before FLOAT64 NOT NULL OPTIONS(description="normalized total number of quotes for tweets mentioning the word before the snapshot date"),
+                  norm_influencer_quotes_before FLOAT64 NOT NULL OPTIONS(description="normalized total number of quotes for influencer tweets mentioning the word before the snapshot date"),
+                  mentions_after INT64 NOT NULL OPTIONS(description="number of times the word was mentioned on or after the snapshot date"),
+                  influencer_mentions_after INT64 NOT NULL OPTIONS(description="number of times the word was mentioned by influencers on or after the snapshot date"),
+                  quotes_after INT64 NOT NULL OPTIONS(description="total number of quotes for tweets mentioning the word on or after the snapshot date"),
+                  influencer_quotes_after INT64 NOT NULL OPTIONS(description="total number of quotes for influencer tweets mentioning the word on or after the snapshot date"),
+                  norm_mentions_after FLOAT64 NOT NULL OPTIONS(description="normalized number of times the word was mentioned on or after the snapshot date"),
+                  norm_influencer_mentions_after FLOAT64 NOT NULL OPTIONS(description="normalized number of times the word was mentioned by influencers on or after the snapshot date"),
+                  norm_quotes_after FLOAT64 NOT NULL OPTIONS(description="normalized total number of quotes for tweets mentioning the word on or after the snapshot date"),
+                  norm_influencer_quotes_after FLOAT64 NOT NULL OPTIONS(description="normalized total number of quotes for influencer tweets mentioning the word on or after the snapshot date")
+              )
+              OPTIONS(
+                description="Snapshots of stats for words mentioned in the tweets from the tweets table. Snapshots are taken once a week, starting from 2021-10-01. Stats capture how often a word was mentioned before and after the snapshot date"
+              )
+              AS
+              WITH
+              dates AS (
+                  SELECT
+                      week_start, week_num
+                  FROM UNNEST(GENERATE_DATE_ARRAY('2021-10-01', '2021-12-01', INTERVAL 1 WEEK)) AS week_start WITH OFFSET AS week_num
+              ),
+              words AS (
+                  SELECT
+                      DISTINCT word
+                  FROM TwitterData.word_mentions
+              ),
+              words_with_dates AS (
+                  SELECT
+                      word,
+                      week_start,
+                      week_num
+                  FROM words CROSS JOIN dates
+              ),
+              mentions_before AS (
+                  SELECT
+                      wwd.word,
+                      week_start,
+                      week_num,
+                      COUNT(1) AS mentions_before,
+                      COUNTIF(is_by_influencer) AS influencer_mentions_before,
+                      SUM(quote_count) AS quotes_before,
+                      SUM(IF(is_by_influencer, quote_count, 0)) AS influencer_quotes_before,
+                      COUNT(1)/(week_num + 1) AS norm_mentions_before,
+                      COUNTIF(is_by_influencer)/(week_num + 1) AS norm_influencer_mentions_before,
+                      SUM(quote_count)/(week_num + 1) AS norm_quotes_before,
+                      SUM(IF(is_by_influencer, quote_count, 0))/(week_num + 1) AS norm_influencer_quotes_before,
+                  FROM words_with_dates AS wwd
+                  JOIN TwitterData.word_mentions AS wm
+                  ON wwd.word = wm.word
+                  WHERE DATE(wm.created_at) < week_start AND DATE(wm.created_at) >= "2021-09-24"
+                  GROUP BY 1, 2, 3
+              ),
+              mentions_after AS (
+                  SELECT
+                      wwd.word,
+                      week_start,
+                      week_num,
+                      COUNT(1) AS mentions_after,
+                      COUNTIF(is_by_influencer) AS influencer_mentions_after,
+                      SUM(quote_count) AS quotes_after,
+                      SUM(IF(is_by_influencer, quote_count, 0)) AS influencer_quotes_after,
+                      COUNT(1)/(9 - week_num) AS norm_mentions_after,
+                      COUNTIF(is_by_influencer)/(9 - week_num) AS norm_influencer_mentions_after,
+                      SUM(quote_count)/(9 - week_num) AS norm_quotes_after,
+                      SUM(IF(is_by_influencer, quote_count, 0))/(9 - week_num) AS norm_influencer_quotes_after,
+                  FROM words_with_dates AS wwd
+                  JOIN TwitterData.word_mentions AS wm
+                  ON wwd.word = wm.word
+                  WHERE DATE(wm.created_at) >= week_start
+                  GROUP BY 1, 2, 3
+              )
+              SELECT
+                  COALESCE(mb.word, ma.word) AS word,
+                  COALESCE(mb.week_start, ma.week_start) AS week_start,
+                  COALESCE(mb.week_num, ma.week_num) AS week_num,
+                  COALESCE(mb.mentions_before, 0) AS mentions_before,
+                  COALESCE(mb.influencer_mentions_before, 0) AS influencer_mentions_before,
+                  COALESCE(mb.quotes_before, 0) AS quotes_before,
+                  COALESCE(mb.influencer_quotes_before, 0) AS influencer_quotes_before,
+                  COALESCE(mb.norm_mentions_before, 0) AS norm_mentions_before,
+                  COALESCE(mb.norm_influencer_mentions_before, 0) AS norm_influencer_mentions_before,
+                  COALESCE(mb.norm_quotes_before, 0) AS norm_quotes_before,
+                  COALESCE(mb.norm_influencer_quotes_before, 0) AS norm_influencer_quotes_before,
+                  COALESCE(ma.mentions_after, 0) AS mentions_after,
+                  COALESCE(ma.influencer_mentions_after, 0) AS influencer_mentions_after,
+                  COALESCE(ma.quotes_after, 0) AS quotes_after,
+                  COALESCE(ma.influencer_quotes_after, 0) AS influencer_quotes_after,
+                  COALESCE(ma.norm_mentions_after, 0) AS norm_mentions_after,
+                  COALESCE(ma.norm_influencer_mentions_after, 0) AS norm_influencer_mentions_after,
+                  COALESCE(ma.norm_quotes_after, 0) AS norm_quotes_after,
+                  COALESCE(ma.norm_influencer_quotes_after, 0) AS norm_influencer_quotes_after,
+              FROM mentions_before AS mb
+              FULL OUTER JOIN mentions_after AS ma
+              ON mb.word = ma.word AND mb.week_start = ma.week_start;
         next: end
 
 
