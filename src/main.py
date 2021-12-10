@@ -10,6 +10,7 @@ import time
 import pandas as pd
 import numpy as np
 import json
+from raw_paginator import RawPaginator
 
 if 'BEARER_TOKEN' in os.environ:
     TWITTER_CLIENT_RAW = tweepy.Client(bearer_token=os.environ['BEARER_TOKEN'], consumer_key=os.environ['API_KEY'], consumer_secret=os.environ['API_KEY_SECRET'], return_type=requests.Response)
@@ -122,6 +123,164 @@ def compute_influencer_watermarks(request):
         watermarks.append(row.to_dict())
     logging.info("Successfully uploaded watermarks to Firestore. Exiting now....")
     return (json.dumps({"watermarks": watermarks}), 200, RESPONSE_HEADERS)
+
+def set_fetched_at_field(tweets):
+    """
+    Sets fetched-at field for all tweets in the list.
+
+    The list is modified inplace.
+    Fetched at is set to the current time, which is fine for our purposes.
+    Returns the original list of tweets.
+    """
+    fetched_at = time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime())
+    for tweet in tweets:
+        tweet["fetched_at"] = fetched_at
+    return tweets
+
+def get_tweets_by_ids(tweet_ids):
+    """
+    Queries Twitter API for tweets info by their ids.
+
+    Returns a list of tweet dictionaries. Fields in the dictionaries match TWEET_FIELDS constant
+    """
+    BATCH_SIZE = 100
+    tweets = []
+    for n in range(int((len(tweet_ids) - 1)/BATCH_SIZE) + 1):
+        batch = tweet_ids[n*BATCH_SIZE:min(len(tweet_ids), (n+1)*BATCH_SIZE)]
+        response = TWITTER_CLIENT_RAW.get_tweets(ids=batch, tweet_fields=TWEET_FIELDS)
+        response_json = response.json()
+        if "data" in response_json:
+            tweets.extend(set_fetched_at_field(response_json["data"]))
+        else:
+            logging.warning("No data returned for request %s", response.request.url)
+        time.sleep(3) # to adhere to 300 req/15 minutes rate limit
+        if (n+1) % 10 == 0:
+            logging.info("Fetched %d tweets", (n+1)*BATCH_SIZE)
+    time.sleep(3)
+    return tweets
+
+def add_liked_by_user_id_field(likes, user_id):
+    """
+    Sets "liked_by_user_id" field to user_id for likes in the list.
+
+    Returns the original list
+    """
+    for like in likes:
+        like["liked_by_user_id"] = user_id
+    return likes
+
+def get_tweets_and_likes_for_user(user_id, latest_seen_tweet_id, latest_seen_like_timestamp):
+    """
+    Queries Tweeter API for tweets and likes for a given user. Queries for referenced and liked tweets as well.
+
+    Returns a dictionary:
+    {
+        "tweets": [list of retrieved tweets],
+        "likes": [list of retrieved likes]
+    }
+    """
+    tweets = []
+    # let's download user's tweets
+    logging.info("Fetching tweets...")
+    for response in RawPaginator(TWITTER_CLIENT_RAW.get_users_tweets, user_id, max_results=100, limit=3200, tweet_fields=TWEET_FIELDS, since_id=latest_seen_tweet_id):
+        response_json = response.json()
+        if "data" in response_json:
+            tweets.extend(set_fetched_at_field(response_json["data"]))
+        else:
+            logging.warning("No data returned for request %s", response.request.url)
+        time.sleep(0.8)
+    logging.info("Fetched %d tweets", len(tweets))
+
+    # now let's download likes
+    likes = []
+    logging.info("Fetching likes...")
+    for response in RawPaginator(TWITTER_CLIENT_RAW.get_liked_tweets, user_id, max_results=100, limit=7500, tweet_fields=["id", "created_at"]):
+        response_json = response.json()
+        if "data" in response_json:
+            likes.extend(add_liked_by_user_id_field(response_json["data"], user_id))
+            # We should stop querying if we see liked tweet that is too old
+            time_to_break = False
+            for tweet in response_json["data"]:
+                if tweet["created_at"] <= latest_seen_like_timestamp:
+                    time_to_break = True
+                    break
+            if time_to_break:
+                break
+        else:
+            logging.warning("No data returned for request %s", response.request.url)
+        time.sleep(12) # to meet 75 requests per 15 minutes limit
+    time.sleep(12) # To make sure successive calls respect rate limit
+    logging.info("Fetched %d likes", len(likes))
+
+    # Collect all the liked and referenced tweet ids and query the information about them
+    referenced_and_liked_tweet_ids = set()
+    influencer_tweet_ids = set([tweet["id"] for tweet in tweets])
+
+    for tweet in tweets:
+        if "referenced_tweets" in tweet:
+            for t in tweet["referenced_tweets"]:
+                referenced_and_liked_tweet_ids.add(t["id"])
+
+    for like in likes:
+        referenced_and_liked_tweet_ids.add(like["id"])
+
+    tweet_ids_to_fetch = list(referenced_and_liked_tweet_ids - influencer_tweet_ids)
+
+    logging.info("Fetching %d referenced and liked tweets ...", len(tweet_ids_to_fetch))
+    tweets.extend(get_tweets_by_ids(tweet_ids_to_fetch))
+
+    return {
+        "tweets": tweets,
+        "likes": likes,
+    }
+
+def store_tweets_in_firestore(tweets):
+    """
+    Saves an array of tweets to Firestore db "tweets" collection.
+
+    If a tweet already exists in the collection, it's overwritten, which is fine because we'll get fresher engagement metrics
+    """
+    for tweet in tweets:
+        data_ref = FIRESTORE_DB.collection(u"tweets").document(tweet["id"])
+        data_ref.set(tweet)
+
+def store_likes_in_firestore(likes):
+    """
+    Saves an array of liked tweets to Firestore db "likes" collection.
+
+    We use tweet_id + liked_by_user as a key
+    """
+    for like in likes:
+        data_ref = FIRESTORE_DB.collection(u"likes").document(like["id"] + "|" + str(like["liked_by_user_id"])) # compound key because the same tweet can be liked by multiple users
+        data_ref.set(like)
+
+def download_new_tweets_and_likes_for_user(request):
+    """
+    Query Twitter API for fresh tweets and likes for a specific user and store them in Firestore
+
+    HTTP cloud function that accepts POST with json body in format:
+        {
+            "user_id": 123,
+            "username": "test",
+            "latest_tweet_id": 456,
+            "latest_like_at": "2021-12-09T12:34:00.000Z"
+        }
+
+    Responds with json body:
+    {
+        "status": "SUCCESS"
+    }
+    """
+    if request.method != "POST" or request.headers["content-type"] != "application/json":
+        logging.error("Incorrect method or content type: %s, %s", request.method, request.headers["content-type"])
+        return (json.dumps({"status": "INVALID_REQUEST"}), 400, RESPONSE_HEADERS)
+    watermarks = request.get_json(silent=False)
+    logging.info("Fetching tweets and likes for user %s. Watermarks: %s", watermarks["username"], watermarks)
+    tweets_and_likes = get_tweets_and_likes_for_user(watermarks["user_id"], watermarks["latest_tweet_id"], watermarks["latest_like_at"])
+    store_tweets_in_firestore(tweets_and_likes["tweets"])
+    store_likes_in_firestore(tweets_and_likes["likes"])
+    return (json.dumps({"status": "SUCCESS"}), 200, RESPONSE_HEADERS)
+
 
 def get_existing_user_ids():
     """
