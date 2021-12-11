@@ -8,6 +8,7 @@ main:
           - upload_tweets_from_firestore_to_big_query_url: https://us-west1-web3twitterdata.cloudfunctions.net/upload_tweets_from_firestore_to_big_query
           - upload_likes_from_firestore_to_big_query_url: https://us-west1-web3twitterdata.cloudfunctions.net/upload_likes_from_firestore_to_big_query
           - upload_users_from_firestore_to_big_query_url: https://us-west1-web3twitterdata.cloudfunctions.net/upload_users_from_firestore_to_big_query
+          - cleanup_firestore_data_url: https://us-west1-web3twitterdata.cloudfunctions.net/cleanup_firestore_data
         next: computeInfluencerWatermarks
     - computeInfluencerWatermarks:
         call: http.get
