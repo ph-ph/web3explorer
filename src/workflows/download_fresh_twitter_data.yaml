@@ -481,6 +481,14 @@ main:
               FROM mentions_before AS mb
               FULL OUTER JOIN mentions_after AS ma
               ON mb.word = ma.word AND mb.week_start = ma.week_start;
+        next: cleanupFirestoreData
+    - cleanupFirestoreData:
+        call: http.post
+        args:
+          url: ${cleanup_firestore_data_url}
+          auth:
+            type: OIDC
+          timeout: 540
         next: end
 
 

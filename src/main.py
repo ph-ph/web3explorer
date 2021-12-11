@@ -482,6 +482,9 @@ def upload_likes_from_firestore_to_big_query(request):
         "status": "SUCCESS"
     }
     """
+    if request.method != "POST":
+        logging.error("Incorrect method: %s", request.method)
+        return (json.dumps({"status": "INVALID_REQUEST"}), 400, RESPONSE_HEADERS)
     logging.info("Getting likes data from Firestore...")
     likes_df = create_new_likes_dataframe()
     logging.info("Got %d likes", len(likes_df))
@@ -501,10 +504,55 @@ def upload_users_from_firestore_to_big_query(request):
         "status": "SUCCESS"
     }
     """
+    if request.method != "POST":
+        logging.error("Incorrect method: %s", request.method)
+        return (json.dumps({"status": "INVALID_REQUEST"}), 400, RESPONSE_HEADERS)
     logging.info("Getting users data from Firestore...")
     likes_df = create_new_users_dataframe()
     logging.info("Got %d users", len(likes_df))
     logging.info("Uploading users to Big Query...")
     result = upload_df_to_big_query_with_ds_partition(likes_df, "TwitterDataRaw.users")
     logging.info("Uploaded %d rows to Big Query. We're done!", result.output_rows)
+    return (json.dumps({"status": "SUCCESS"}), 200, RESPONSE_HEADERS)
+
+def delete_collection(coll_ref, batch_size, collection_name):
+    """
+    Recursively delete all documents from Firestore collection
+    """
+    docs = coll_ref.limit(batch_size).stream()
+    deleted = 0
+
+    for doc in docs:
+        doc.reference.delete()
+        deleted = deleted + 1
+    logging.info("Deleted %d docs from collection %s", deleted, collection_name)
+
+    if deleted >= batch_size:
+        return delete_collection(coll_ref, batch_size, collection_name)
+    else:
+        logging.info("Done deleting from collection %s", collection_name)
+
+def cleanup_firestore_data(request):
+    """
+    Remove all temporary collections from the Firestore
+
+    HTTP Cloud Function. Accepts only POST requests, no body is needed.
+    Responds with json body:
+    {
+        "status": "SUCCESS"
+    }
+    """
+    if request.method != "POST":
+        logging.error("Incorrect method: %s", request.method)
+        return (json.dumps({"status": "INVALID_REQUEST"}), 400, RESPONSE_HEADERS)
+
+    BATCH_SIZE = 100
+    logging.info("Deleting tweets collection")
+    delete_collection(FIRESTORE_DB.collection(u"tweets"), BATCH_SIZE, "tweets")
+    logging.info("Deleting likes collection")
+    delete_collection(FIRESTORE_DB.collection(u"likes"), BATCH_SIZE, "likes")
+    logging.info("Deleting users collection")
+    delete_collection(FIRESTORE_DB.collection(u"users"), BATCH_SIZE, "users")
+    logging.info("Deleting influencer_watermarks collection")
+    delete_collection(FIRESTORE_DB.collection(u"influencer_watermarks"), BATCH_SIZE, "influencer_watermarks")
     return (json.dumps({"status": "SUCCESS"}), 200, RESPONSE_HEADERS)
