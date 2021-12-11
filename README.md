@@ -25,5 +25,6 @@ There are a bunch of shell scripts in the root folder that deploy various artifa
 - Enable Cloud Functions, Workflows, Firestore, BigQuery in your project.
 - Create TwitterData and TwitterDataRaw datasets in BigQuery.
 - Create tweets, likes, referenced_tweets and users tables in TwitterData dataset - they can be empty, and you can guess the schema based on the queries in my workflow config.
+- You'll need to add TwitterData.influencer_usernames_import table with usernames of influencers, and seed TwitterData.users with at least profile information of influencers. You can use csv import functionality of BigQuery to do that.
 - Deploy all the Cloud Functions and the workflow config. This will require creating service account. You'll also need to create a secret using Secret Manager and make sure that Twitter API's credentials are passed to Cloud Functions via env variables.
 - Schedule the workflow to run once a day
