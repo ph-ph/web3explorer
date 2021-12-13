@@ -1,9 +1,11 @@
 import React from 'react';
+import { useParams } from "react-router-dom";
 import './App.css';
 
 import 'bootstrap/dist/css/bootstrap.min.css';
 
 import BTable from 'react-bootstrap/Table';
+import { Link } from "react-router-dom";
 
 import { initializeApp } from "firebase/app";
 import {
@@ -40,6 +42,9 @@ const RANGE_OPTIONS = [
 ];
 const ACCEPTABLE_RANGE_VALUES = RANGE_OPTIONS.map(option => option.value);
 
+// This is super UGLY, but I need to share the state between App and TweetsView, and that's the easiest way that I know
+var URLS_GLOBAL = [];
+
 // Initialize Firebase
 initializeApp(firebaseConfig);
 const db = getFirestore();
@@ -57,7 +62,10 @@ async function getPopularUrls(range) {
   const docSnap = await getDoc(doc(db, "urlsData", range));
 
   if (docSnap.exists()) {
-    return docSnap.data().urls;
+    const urls = docSnap.data().urls;
+    // let's add index to each url so that we can link to "view tweets" page
+    urls.forEach((url, i) => { url.index = i; });
+    return urls;
   } else {
     console.error("The document doesn't exist", range);
     return [];
@@ -157,6 +165,13 @@ function UrlsTable({urls}) {
         return (<span>{influencerProfiles}</span>)
       },
     },
+    {
+      Header: 'Tweets',
+      accessor: 'index',
+      Cell: ({value}) => {
+        return (<Link to={"/tweets/" + value}>View</Link>);
+      }
+    }
   ], []);
 
   const {
@@ -209,7 +224,7 @@ function UrlsTable({urls}) {
   );
 }
 
-class App extends React.Component {
+export class App extends React.Component {
   constructor(props) {
     super(props);
     this.state = {
@@ -221,6 +236,7 @@ class App extends React.Component {
   componentDidMount() {
     // Load popular urls
     getPopularUrls(this.state.range).then((urls) => {
+      URLS_GLOBAL = urls;
       this.setState((state, props) => ({ urls }));
     });
   }
@@ -237,4 +253,14 @@ class App extends React.Component {
   }
 }
 
-export default App;
+export function TweetsView() {
+  const params = useParams();
+  const urlData = URLS_GLOBAL.find(url => (url.index === parseInt(params.urlId, 10)));
+  if (!urlData) {
+    return (<div>URL not found! {params.urlId}</div>);
+  }
+  const tweets = urlData.tweet_urls.map(url => (<div key={url}><a href={url}>{url}</a></div>));
+  return (
+    <div>{tweets}</div>
+  );
+}
