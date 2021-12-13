@@ -556,3 +556,128 @@ def cleanup_firestore_data(request):
     logging.info("Deleting influencer_watermarks collection")
     delete_collection(FIRESTORE_DB.collection(u"influencer_watermarks"), BATCH_SIZE, "influencer_watermarks")
     return (json.dumps({"status": "SUCCESS"}), 200, RESPONSE_HEADERS)
+
+import urllib.request as urllib
+from bs4 import BeautifulSoup
+
+PAGE_TITLE_HASH = {}
+
+def fetch_page_title(url):
+    """
+    Fetch title of a webpage by its url.
+
+    This requires fetching the whole webpage, which might be slow and data intensive, and can fail for various reasons.
+
+    Returns fetched title, or the page url if we failed to get the title.
+    """
+    if url in PAGE_TITLE_HASH:
+        return PAGE_TITLE_HASH[url]
+    title = url
+    try:
+        # headers that make it more likely that the website won't respond with 403. Kind of random, found on SO :-(
+        hdr = {
+            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.11 (KHTML, like Gecko) Chrome/23.0.1271.64 Safari/537.11',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.3',
+            'Accept-Encoding': 'none',
+            'Accept-Language': 'en-US,en;q=0.8',
+            'Connection': 'keep-alive'
+        }
+
+        req = urllib.Request(url, headers=hdr)
+        soup = BeautifulSoup(urllib.urlopen(req))
+        if soup.title.string is not None:
+            title = soup.title.string
+    except BaseException as ex:
+        logging.warning('error getting title for url %s, %s', url, ex)
+        return url # let's not store it in cache
+    PAGE_TITLE_HASH[url] = title
+    return title
+
+def get_popular_urls(days_in_range=30):
+    """
+    Run a BigQuery query to get stats about mentioned urls and select top 50 most popular.
+    days_in_range is positive integer determining how far back in the past we look.
+    E.g. days_in_range=7 will return data about urls mentioned in the past 7 days.
+
+    Returns a dataframe with urls.
+    """
+
+    if not (days_in_range >= 0 and days_in_range <= 1000):
+        # it's super unlikely that someone will attempt SQL injection, and the better way to deal with this is query parameters,
+        # but let's add this check just in case
+        logging.error("get_popular_urls was called with invalid days_in_range parameter value: %s", str(days_in_range))
+        return pd.DataFrame()
+
+    query = f"""
+    WITH url_mentions AS (
+        SELECT
+            *
+        FROM TwitterData.tweets
+        CROSS JOIN UNNEST(mentioned_urls) AS mentioned_url
+        WHERE created_at >= TIMESTAMP(DATE_SUB(CURRENT_DATE(), INTERVAL {days_in_range} DAY)) AND mentioned_url NOT LIKE '%twitter.com%'
+    )
+    SELECT
+        mentioned_url,
+        COUNT(1) AS mentions_count,
+        COUNTIF(is_by_influencer) AS influencer_mentions_count,
+        SUM(retweet_count) AS retweet_count,
+        SUM(IF(is_by_influencer, retweet_count, 0)) AS influencer_retweet_count,
+        SUM(quote_count) AS quote_count,
+        SUM(IF(is_by_influencer, quote_count, 0)) AS influencer_quote_count,
+        ARRAY_AGG(DISTINCT IF(is_by_influencer, author_username, NULL) IGNORE NULLS) AS mentioned_by_influencers,
+        COALESCE(ARRAY_LENGTH(ARRAY_AGG(DISTINCT IF(is_by_influencer, author_username, NULL) IGNORE NULLS)), 0) AS influencer_count,
+        ARRAY_LENGTH(ARRAY_AGG(DISTINCT author_username)) AS user_count,
+        ARRAY_AGG(CONCAT('https://twitter.com/', author_username, '/status/', id)) AS tweet_urls
+    FROM url_mentions
+    GROUP BY mentioned_url
+    ORDER BY mentions_count DESC, quote_count DESC
+    LIMIT 50
+    """
+    df = BIGQUERY_CLIENT.query(query).to_dataframe()
+    df["mentioned_by_influencers"] = df["mentioned_by_influencers"].apply(lambda a: list(a))
+    df["tweet_urls"] = df["tweet_urls"].apply(lambda a: list(a))
+    # fetch page titles, where possible
+    df["title"] = df["mentioned_url"].apply(fetch_page_title)
+    return df
+
+def save_popular_urls_to_firestore(urls_df, key):
+    """
+    Store most popular urls for a given timerange into Firestore.
+
+    urls_df - dataframe with urls stats
+    key - string id corresponding to that time range. E.g. lastMonth, lastWeek or last2days
+
+    Doesn't return anything
+    """
+    urls = [row.to_dict() for _, row in urls_df.iterrows()]
+    doc = {
+        "urls": urls,
+    }
+    FIRESTORE_DB.collection("urlsData").document(key).set(doc)
+
+def refresh_trending_urls_data(request):
+    """
+    Run BigQuery queries to get most popular urls for various time ranges. Upload the results into Firestore for use by website.
+
+    HTTP Cloud Function. Accepts only POST requests, no body is needed.
+    Responds with json body:
+    {
+        "status": "SUCCESS"
+    }
+    """
+    if request.method != "POST":
+        logging.error("Incorrect method: %s", request.method)
+        return (json.dumps({"status": "INVALID_REQUEST"}), 400, RESPONSE_HEADERS)
+
+    ranges = {
+        "lastMonth": 30,
+        "lastWeek": 7,
+        "last2days": 2,
+    }
+
+    for key, days in ranges.items():
+        logging.info("Fetching popular urls in the %s range", key)
+        save_popular_urls_to_firestore(get_popular_urls(days), key)
+
+    return (json.dumps({"status": "SUCCESS"}), 200, RESPONSE_HEADERS)
