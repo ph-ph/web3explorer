@@ -14,6 +14,8 @@ import {
   doc
 } from 'firebase/firestore/lite';
 
+// Let's use anonymous authentication to prevent scripted access to our Firestore data
+import { getAuth, signInAnonymously } from "firebase/auth";
 import { useSortBy, useTable } from 'react-table'
 
 // Your web app's Firebase configuration
@@ -48,6 +50,7 @@ var URLS_GLOBAL = [];
 // Initialize Firebase
 initializeApp(firebaseConfig);
 const db = getFirestore();
+const auth = getAuth();
 
 /**
  *
@@ -234,10 +237,21 @@ export class App extends React.Component {
   }
 
   componentDidMount() {
-    // Load popular urls
-    getPopularUrls(this.state.range).then((urls) => {
-      URLS_GLOBAL = urls;
-      this.setState((state, props) => ({ urls }));
+    // Sign in the user into Firestore/Firebase
+    signInAnonymously(auth)
+    .then(() => {
+      // Signed in..
+      console.log("user signed in");
+      // Load popular urls
+      getPopularUrls(this.state.range).then((urls) => {
+        URLS_GLOBAL = urls;
+        this.setState((state, props) => ({ urls }));
+      });
+    })
+    .catch((error) => {
+      const errorCode = error.code;
+      const errorMessage = error.message;
+      console.error("failed to anonymously sign in the user", errorCode, errorMessage);
     });
   }
 
