@@ -18,7 +18,7 @@ The code in this project handles incremental updates:
 
 There are a bunch of shell scripts in the root folder that deploy various artifacts to GCP.
 
-The website folder contains simple React website that displays most popular urls mentioned in the tweets. You can host it on any platform that supports static websites.
+The website folder contains simple React website that displays most popular urls mentioned in the tweets. You can host it on any platform that supports static websites. Note that the hosting should support HTTPS, which is necessary to make anonymous authentication work. Firestore is configured only to allow authenticated reads to avoid misuse, and anonymous authentication is the least intrusive way to make that work.
 
 # Caveats
 - Folder structure in the project is suboptimal, to say the least - we deploy table schemas and workflow config with every CloudFunction. I would've fixed it, but the amount of retesting that will have to be done is non-trivial.
