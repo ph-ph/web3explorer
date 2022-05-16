@@ -143,6 +143,9 @@ def get_tweets_by_ids(tweet_ids):
 
     Returns a list of tweet dictionaries. Fields in the dictionaries match TWEET_FIELDS constant
     """
+    if len(tweet_ids) == 0:
+        return []
+
     BATCH_SIZE = 100
     tweets = []
     for n in range(int((len(tweet_ids) - 1)/BATCH_SIZE) + 1):

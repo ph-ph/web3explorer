@@ -3,6 +3,7 @@
 # This is basically a copy of Tweepy's Paginator class with some minor tweaks to use raw json response
 #########################################################################################
 
+import logging
 from math import inf
 
 class RawPaginator:
@@ -91,6 +92,10 @@ class RawPaginationIterator:
 
         response = self.method(*self.args, **self.kwargs)
         response_json = response.json()
+
+        if "meta" not in response_json:
+            logging.error("Unexpected response: %s", response_json)
+            raise StopIteration
 
         self.previous_token = response_json["meta"].get("previous_token")
         self.next_token = response_json["meta"].get("next_token")
